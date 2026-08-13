@@ -1,0 +1,33 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "backend",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-13",
+	"compatibility_flags": [
+		"global_fetch_strictly_public"
+	],
+ 	"d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fakenews-db",
+      "database_id": "local-dev-id-1234"
+    }
+	],		
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+
+	"r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "fakenews-images",
+      "preview_bucket_name": "fakenews-images-dev"
+    }
+  ]
+	
+}
