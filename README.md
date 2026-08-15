@@ -7,9 +7,11 @@ Um sistema full-stack para verificação de fatos em imagens usando IA. Usuário
 ## ✨ Funcionalidades
 
 - **Autenticação de Usuários:** Sistema completo de cadastro e login.
-- **Sistema de Créditos:** Cada usuário começa com créditos que são consumidos a cada verificação.
+- **Sistema de Créditos e Fallback:**
+  - Cada usuário começa com créditos para as APIs primárias (Gemini, Grok).
+  - Sistema de fallback multinível: se a API do Gemini falhar, tenta a do Grok. Se ambas falharem, utiliza automaticamente modelos de visão gratuitos via OpenRouter, garantindo alta disponibilidade.
 - **Upload de Imagens:** Interface intuitiva para arrastar e soltar ou selecionar arquivos de imagem (PNG, JPG, WEBP).
-- **Análise com IA:** Utiliza o modelo `gemini-flash-latest` do Google para analisar o conteúdo textual e contextual da imagem.
+- **Análise com IA:** Utiliza o modelo `gemini-flash-latest` do Google como provedor principal, com fallbacks inteligentes.
 - **Relatório Detalhado:** Exibe o resultado da análise com:
   - Percentual de veracidade.
   - Resumo conciso da análise.
@@ -33,7 +35,9 @@ O projeto é um monorepo dividido em `frontend` e `backend`:
 - **Framework:** Hono
 - **Ambiente:** Cloudflare Workers
 - **Linguagem:** TypeScript
-- **Inteligência Artificial:** Google Gemini API
+- **Inteligência Artificial:**
+  - Google Gemini API (provedor principal)
+  - Grok API e OpenRouter API (provedores de fallback)
 - **Banco de Dados:** Cloudflare D1 (SQL)
 - **Armazenamento de Arquivos:** Cloudflare R2
 
@@ -102,12 +106,15 @@ O backend depende de serviços da Cloudflare (D1, R2) e da API do Google Gemini.
     bucket_name = "fakenews-verify-bucket"
     ```
 
-6.  **Configure a Chave da API Gemini:**
-    Obtenha sua chave de API no Google AI Studio e adicione-a como um segredo no Wrangler.
+6.  **Configure as Chaves de API:**
+    Obtenha suas chaves de API do Google AI Studio, Grok e OpenRouter e adicione-as como segredos no Wrangler.
 
     ```bash
     wrangler secret put GEMINI_API_KEY
+    wrangler secret put XAI_API_KEY
+    wrangler secret put OPENROUTER_API_KEY
     ```
+    *O OpenRouter atua como um agregador para modelos gratuitos, garantindo um fallback robusto.*
 
 7.  **Crie a Tabela de Usuários:**
     Execute o schema SQL para criar as tabelas necessárias no seu banco D1.
@@ -118,7 +125,7 @@ O backend depende de serviços da Cloudflare (D1, R2) e da API do Google Gemini.
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
-      credits INTEGER DEFAULT 5,
+      credits TEXT DEFAULT '{"gemini": 5, "grok": 5, "openrouter": 10}',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 

@@ -4,11 +4,11 @@ import { UploadCloud, Loader2, CheckCircle2, ExternalLink, LogIn, UserPlus, LogO
 
 // Estados de Autenticação
 const isLoggedIn = ref(false)
-const currentUser = ref<{ id: string; name: string; credits: { gemini: number; grok: number; } } | null>(null)
+const currentUser = ref<{ id: string; name: string; credits: { gemini: number; grok: number; openrouter: number; } } | null>(null)
 const totalCredits = computed(() => {
   if (!currentUser.value) return 0;
   // Garante que a soma funcione mesmo se a estrutura de créditos for inesperada
-  return (currentUser.value.credits?.gemini || 0) + (currentUser.value.credits?.grok || 0);
+  return (currentUser.value.credits?.gemini || 0) + (currentUser.value.credits?.grok || 0) + (currentUser.value.credits?.openrouter || 0);
 })
 
 const authMode = ref<'login' | 'register'>('login')
@@ -32,8 +32,8 @@ const purchaseLoading = ref(false)
 const creditPackages = [ { credits: 50, price: 5 }, { credits: 120, price: 10 }, { credits: 300, price: 20 } ];
 
 // Novo estado para controle do provedor de IA
-const currentAIProvider = ref<'gemini' | 'grok'>('gemini')
-const isGrokFallbackActive = ref(false)
+const currentAIProvider = ref<'gemini' | 'grok' | 'openrouter'>('gemini')
+const activeFallbackProvider = ref<'grok' | 'openrouter' | null>(null)
 
 // --- FUNÇÕES DE AUTENTICAÇÃO ---
 const handleAuth = async () => {
@@ -60,9 +60,9 @@ const handleAuth = async () => {
 
     const user = data.user;
     // Lógica de transição para a nova estrutura de créditos
-    if (typeof user.credits === 'number' || !user.credits) {
-      // Para usuários existentes ou novos, define um padrão se a resposta da API for antiga
-      currentUser.value = { ...user, credits: { gemini: user.credits || 5, grok: 5 } };
+    if (typeof user.credits === 'number' || !user.credits || !('openrouter' in user.credits)) {
+      const existingGemini = typeof user.credits === 'number' ? user.credits : (user.credits?.gemini ?? 5);
+      currentUser.value = { ...user, credits: { gemini: existingGemini, grok: 5, openrouter: 10 } };
     } else {
       currentUser.value = user;
     }
@@ -109,6 +109,8 @@ const analyzeImage = async () => {
 
   if (usedProvider === 'grok') {
     formData.append('useGrok', 'true') // Informa ao backend para usar Grok
+  } else if (usedProvider === 'openrouter') {
+    formData.append('useOpenRouter', 'true') // Informa ao backend para usar OpenRouter
   }
   try {
     const response = await fetch('http://localhost:8787/api/verify', {
@@ -121,10 +123,17 @@ const analyzeImage = async () => {
     if (!response.ok) {
       // Verifica se o erro é de esgotamento de tokens do Gemini
       if (data.error === 'GEMINI_TOKENS_EXHAUSTED' && usedProvider === 'gemini') {
-        console.warn("Tokens do Gemini esgotados, tentando fallback para a API Grok.")
-        isGrokFallbackActive.value = true // Atualiza o indicador na UI
+        console.warn("Tokens do Gemini esgotados. Tentando fallback para a API Grok.")
+        activeFallbackProvider.value = 'grok' // Atualiza o indicador na UI
         currentAIProvider.value = 'grok' // Define o provedor para a próxima tentativa
         return analyzeImage() // Tenta novamente a análise com Grok
+      }
+      // Verifica se o erro é de esgotamento de tokens do Grok
+      if (data.error === 'GROK_TOKENS_EXHAUSTED' && usedProvider === 'grok') {
+        console.warn("Tokens do Grok esgotados. Tentando fallback para a API OpenRouter.")
+        activeFallbackProvider.value = 'openrouter' // Atualiza o indicador na UI
+        currentAIProvider.value = 'openrouter' // Define o provedor para a próxima tentativa
+        return analyzeImage() // Tenta novamente a análise com OpenRouter
       }
       throw new Error(data.error || 'Erro desconhecido no servidor') // Outros erros
     }
@@ -135,11 +144,9 @@ const analyzeImage = async () => {
       currentUser.value.credits = data.updatedCredits
     }
 
-    // Se a análise foi bem-sucedida com Grok, reseta para Gemini para a próxima vez
-    if (usedProvider === 'grok') {
-      currentAIProvider.value = 'gemini'
-      isGrokFallbackActive.value = false
-    }
+    // Reseta o provedor para o padrão para a próxima análise
+    currentAIProvider.value = 'gemini'
+    activeFallbackProvider.value = null
   } catch (error: any) {
     console.error("Erro na requisição:", error)
     alert("Erro na análise: " + error.message)
@@ -155,6 +162,8 @@ const resetForm = () => {
   file.value = null
   previewUrl.value = null
   analysisResult.value = null
+  currentAIProvider.value = 'gemini'
+  activeFallbackProvider.value = null
 }
 
 const reportError = () => {
@@ -206,7 +215,7 @@ const purchaseCredits = async (pkg: { credits: number, price: number }) => {
     <header class="border-b border-zinc-800/60 bg-zinc-900/55 backdrop-blur-md sticky top-0 z-10">
       <div class="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
         <div class="flex items-center space-x-3">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-violet-500/20">
+          <div class="w-9 h-9 rounded-xl bg-linear-to-tr from-violet-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-violet-500/20">
             <ShieldAlert class="w-5 h-5 text-white" />
           </div>
           <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
@@ -322,7 +331,8 @@ const purchaseCredits = async (pkg: { credits: number, price: number }) => {
             <button @click="analyzeImage" :disabled="isLoading" class="w-full py-3.5 px-4 rounded-xl font-medium text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-violet-600/20 transition-all flex items-center justify-center space-x-2">
               <Loader2 v-if="isLoading" class="w-5 h-5 animate-spin" />
               <span>{{ isLoading ? 'Analisando com Inteligência Artificial...' : 'Verificar Veracidade' }}</span>
-          <span v-if="isGrokFallbackActive" class="text-xs text-amber-300 ml-2">(Usando Grok)</span>
+              <span v-if="activeFallbackProvider === 'grok'" class="text-xs text-amber-300 ml-2">(Usando Grok)</span>
+              <span v-if="activeFallbackProvider === 'openrouter'" class="text-xs text-sky-400 ml-2">(Usando OpenRouter)</span>
             </button>
           </div>
         </div>
@@ -406,9 +416,16 @@ const purchaseCredits = async (pkg: { credits: number, price: number }) => {
           <div class="flex justify-between items-center bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
             <div class="flex items-center space-x-3">
               <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 2.25c-5.376 0-9.75 4.374-9.75 9.75s4.374 9.75 9.75 9.75 9.75-4.374 9.75-9.75S17.376 2.25 12 2.25Zm0 1.5c4.554 0 8.25 3.696 8.25 8.25s-3.696 8.25-8.25 8.25S3.75 16.554 3.75 12 7.446 3.75 12 3.75Zm-3.69 4.773.738 1.325a3.738 3.738 0 0 0 2.952 2.952l1.325.738-1.325.738a3.738 3.738 0 0 0-2.952 2.952l-.738 1.325-.738-1.325a3.738 3.738 0 0 0-2.952-2.952l-1.325-.738 1.325-.738a3.738 3.738 0 0 0 2.952-2.952l.738-1.325Z" /></svg>
-              <span class="font-medium text-sm text-zinc-200">Créditos Grok (Fallback)</span>
+              <span class="font-medium text-sm text-zinc-200">Créditos Grok</span>
             </div>
             <span class="font-bold text-lg text-amber-400">{{ currentUser.credits.grok }}</span>
+          </div>
+          <div class="flex justify-between items-center bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
+            <div class="flex items-center space-x-3">
+              <svg class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 1 1 9 0v3.75M3.75 21.75h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H3.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>
+              <span class="font-medium text-sm text-zinc-200">Créditos OpenRouter</span>
+            </div>
+            <span class="font-bold text-lg text-amber-400">{{ currentUser.credits.openrouter }}</span>
           </div>
         </div>
         <div class="mt-6 space-y-2">
