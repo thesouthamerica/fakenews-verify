@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { UploadCloud, Loader2, CheckCircle2, ExternalLink, LogIn, UserPlus, LogOut, ShieldAlert, Coins } from 'lucide-vue-next'
 
 // Estados de Autenticação
 const isLoggedIn = ref(false)
-const currentUser = ref<{ id: string; name: string; credits: number } | null>(null)
+const currentUser = ref<{ id: string; name: string; credits: { gemini: number; grok: number; } } | null>(null)
+const totalCredits = computed(() => {
+  if (!currentUser.value) return 0;
+  // Garante que a soma funcione mesmo se a estrutura de créditos for inesperada
+  return (currentUser.value.credits?.gemini || 0) + (currentUser.value.credits?.grok || 0);
+})
+
 const authMode = ref<'login' | 'register'>('login')
 
 // Campos do Formulário de Auth
@@ -19,6 +25,15 @@ const file = ref<File | null>(null)
 const previewUrl = ref<string | null>(null)
 const isLoading = ref(false)
 const analysisResult = ref<any>(null)
+const isCreditsModalOpen = ref(false)
+const isPurchaseModalOpen = ref(false)
+const purchaseLoading = ref(false)
+
+const creditPackages = [ { credits: 50, price: 5 }, { credits: 120, price: 10 }, { credits: 300, price: 20 } ];
+
+// Novo estado para controle do provedor de IA
+const currentAIProvider = ref<'gemini' | 'grok'>('gemini')
+const isGrokFallbackActive = ref(false)
 
 // --- FUNÇÕES DE AUTENTICAÇÃO ---
 const handleAuth = async () => {
@@ -43,11 +58,13 @@ const handleAuth = async () => {
       throw new Error(data.error || 'Erro na autenticação')
     }
 
-    if (authMode.value === 'login') {
-      currentUser.value = data.user
+    const user = data.user;
+    // Lógica de transição para a nova estrutura de créditos
+    if (typeof user.credits === 'number' || !user.credits) {
+      // Para usuários existentes ou novos, define um padrão se a resposta da API for antiga
+      currentUser.value = { ...user, credits: { gemini: user.credits || 5, grok: 5 } };
     } else {
-      // Cadastro bem-sucedido: define os dados e loga automaticamente
-      currentUser.value = data.user
+      currentUser.value = user;
     }
 
     isLoggedIn.value = true
@@ -83,10 +100,16 @@ const analyzeImage = async () => {
   isLoading.value = true
   analysisResult.value = null
 
+  // Armazena o provedor de IA atual para esta tentativa
+  let usedProvider = currentAIProvider.value
+
   const formData = new FormData()
   formData.append('image', file.value)
   formData.append('userId', currentUser.value.id)
 
+  if (usedProvider === 'grok') {
+    formData.append('useGrok', 'true') // Informa ao backend para usar Grok
+  }
   try {
     const response = await fetch('http://localhost:8787/api/verify', {
       method: 'POST',
@@ -96,11 +119,27 @@ const analyzeImage = async () => {
     const data = await response.json()
     
     if (!response.ok) {
-      throw new Error(data.error || 'Erro desconhecido no servidor')
+      // Verifica se o erro é de esgotamento de tokens do Gemini
+      if (data.error === 'GEMINI_TOKENS_EXHAUSTED' && usedProvider === 'gemini') {
+        console.warn("Tokens do Gemini esgotados, tentando fallback para a API Grok.")
+        isGrokFallbackActive.value = true // Atualiza o indicador na UI
+        currentAIProvider.value = 'grok' // Define o provedor para a próxima tentativa
+        return analyzeImage() // Tenta novamente a análise com Grok
+      }
+      throw new Error(data.error || 'Erro desconhecido no servidor') // Outros erros
     }
 
     analysisResult.value = data.analysis
-    currentUser.value.credits = data.remainingCredits
+    // O backend deve retornar o objeto `updatedCredits: { gemini: number, grok: number }`
+    if (currentUser.value && data.updatedCredits) {
+      currentUser.value.credits = data.updatedCredits
+    }
+
+    // Se a análise foi bem-sucedida com Grok, reseta para Gemini para a próxima vez
+    if (usedProvider === 'grok') {
+      currentAIProvider.value = 'gemini'
+      isGrokFallbackActive.value = false
+    }
   } catch (error: any) {
     console.error("Erro na requisição:", error)
     alert("Erro na análise: " + error.message)
@@ -109,10 +148,54 @@ const analyzeImage = async () => {
   }
 }
 
+// Reseta o provedor de IA para Gemini se o usuário resetar o formulário
+
+
 const resetForm = () => {
   file.value = null
   previewUrl.value = null
   analysisResult.value = null
+}
+
+const reportError = () => {
+  // Aqui você pode adicionar a lógica para reportar o erro.
+  // Por exemplo, abrir um modal, redirecionar para uma página de contato, ou usar um serviço de logging.
+  alert('Obrigado por reportar! Em uma aplicação real, isso abriria um formulário de contato ou enviaria um log de erro.');
+}
+
+const toggleCreditsModal = () => {
+  isCreditsModalOpen.value = !isCreditsModalOpen.value;
+}
+
+const openPurchaseModal = () => {
+  isCreditsModalOpen.value = false;
+  isPurchaseModalOpen.value = true;
+}
+
+const closePurchaseModal = () => {
+  isPurchaseModalOpen.value = false;
+}
+
+const purchaseCredits = async (pkg: { credits: number, price: number }) => {
+  if (!currentUser.value) return;
+  purchaseLoading.value = true;
+
+  // --- SIMULAÇÃO DE BACKEND ---
+  // Em uma aplicação real, aqui você faria a chamada para o seu backend,
+  // que por sua vez se comunicaria com um gateway de pagamento (Stripe, etc.).
+  console.log(`Iniciando compra de ${pkg.credits} créditos por R$${pkg.price}...`);
+  
+  await new Promise(resolve => setTimeout(resolve, 1500)); // Simula latência da rede
+
+  // Após o pagamento bem-sucedido no backend, ele atualizaria o DB
+  // e retornaria os créditos atualizados. Aqui, simulamos essa atualização.
+  currentUser.value.credits.gemini += pkg.credits;
+  console.log('Compra bem-sucedida! Créditos atualizados.');
+  // --- FIM DA SIMULAÇÃO ---
+
+  purchaseLoading.value = false;
+  isPurchaseModalOpen.value = false;
+  alert(`${pkg.credits} créditos adicionados com sucesso!`);
 }
 </script>
 
@@ -133,10 +216,10 @@ const resetForm = () => {
 
         <!-- Se estiver logado, exibe informações e botão Sair -->
         <div v-if="isLoggedIn && currentUser" class="flex items-center space-x-4">
-          <div class="flex items-center space-x-2 bg-zinc-800/60 border border-zinc-700/50 px-3 py-1.5 rounded-full text-xs">
+          <button @click="toggleCreditsModal" class="flex items-center space-x-2 bg-zinc-800/60 border border-zinc-700/50 px-3 py-1.5 rounded-full text-xs hover:bg-zinc-700/70 hover:border-zinc-600 transition-all">
             <Coins class="w-3.5 h-3.5 text-amber-400" />
-            <span class="text-zinc-300 font-medium">{{ currentUser.credits }} créditos</span>
-          </div>
+            <span class="text-zinc-300 font-medium">{{ totalCredits }} créditos totais</span>
+          </button>
           <span class="text-sm font-medium text-zinc-200 hidden sm:inline">Olá, {{ currentUser.name }}</span>
           <button @click="logout" class="flex items-center space-x-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-medium border border-zinc-700 transition-colors">
             <LogOut class="w-3.5 h-3.5" />
@@ -239,6 +322,7 @@ const resetForm = () => {
             <button @click="analyzeImage" :disabled="isLoading" class="w-full py-3.5 px-4 rounded-xl font-medium text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-violet-600/20 transition-all flex items-center justify-center space-x-2">
               <Loader2 v-if="isLoading" class="w-5 h-5 animate-spin" />
               <span>{{ isLoading ? 'Analisando com Inteligência Artificial...' : 'Verificar Veracidade' }}</span>
+          <span v-if="isGrokFallbackActive" class="text-xs text-amber-300 ml-2">(Usando Grok)</span>
             </button>
           </div>
         </div>
@@ -289,12 +373,82 @@ const resetForm = () => {
       </div>
     </main>
 
+    <!-- Botão de Reportar Erro -->
+    <div class="text-center pb-6">
+      <button @click="reportError" class="text-xs text-zinc-500 hover:text-zinc-400 hover:underline underline-offset-2 transition-colors">
+        Reportar um erro na aplicação
+      </button>
+    </div>
+
     <!-- Footer -->
-    <footer class="border-t border-zinc-800/60 bg-zinc-900/30 py-6 mt-12 text-center text-xs text-zinc-500">
+    <footer class="border-t border-zinc-800/60 bg-zinc-900/30 py-6 text-center text-xs text-zinc-500">
       <p>
         Desenvolvido por Leonardo Bezerra - <a href="https://github.com/thesouthamerica" target="_blank" rel="noopener noreferrer" class="text-violet-400 hover:underline">GitHub</a>
       </p>
       <p>Powered by Cloudflare Workers & Google Gemini</p>
     </footer>
+
+    <!-- Modal de Créditos -->
+    <div v-if="isCreditsModalOpen && currentUser" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" @click.self="toggleCreditsModal">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm transform transition-all scale-100 opacity-100">
+        <h3 class="text-lg font-bold text-white mb-2">Seus Créditos de IA</h3>
+        <p class="text-xs text-zinc-400 mb-6">
+          Sua conta possui saldos separados para diferentes provedores de IA, garantindo maior disponibilidade do serviço.
+        </p>
+        <div class="space-y-3">
+          <div class="flex justify-between items-center bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
+            <div class="flex items-center space-x-3">
+              <img src="https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg" alt="Google Gemini" class="h-6 w-6">
+              <span class="font-medium text-sm text-zinc-200">Créditos Gemini</span>
+            </div>
+            <span class="font-bold text-lg text-amber-400">{{ currentUser.credits.gemini }}</span>
+          </div>
+          <div class="flex justify-between items-center bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
+            <div class="flex items-center space-x-3">
+              <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 2.25c-5.376 0-9.75 4.374-9.75 9.75s4.374 9.75 9.75 9.75 9.75-4.374 9.75-9.75S17.376 2.25 12 2.25Zm0 1.5c4.554 0 8.25 3.696 8.25 8.25s-3.696 8.25-8.25 8.25S3.75 16.554 3.75 12 7.446 3.75 12 3.75Zm-3.69 4.773.738 1.325a3.738 3.738 0 0 0 2.952 2.952l1.325.738-1.325.738a3.738 3.738 0 0 0-2.952 2.952l-.738 1.325-.738-1.325a3.738 3.738 0 0 0-2.952-2.952l-1.325-.738 1.325-.738a3.738 3.738 0 0 0 2.952-2.952l.738-1.325Z" /></svg>
+              <span class="font-medium text-sm text-zinc-200">Créditos Grok (Fallback)</span>
+            </div>
+            <span class="font-bold text-lg text-amber-400">{{ currentUser.credits.grok }}</span>
+          </div>
+        </div>
+        <div class="mt-6 space-y-2">
+          <button @click="openPurchaseModal" class="w-full py-2.5 rounded-xl font-medium text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-lg shadow-violet-600/20 transition-all">
+            Comprar Mais Créditos
+          </button>
+          <button @click="toggleCreditsModal" class="w-full py-2.5 rounded-xl font-medium text-zinc-400 bg-zinc-800/60 hover:bg-zinc-700/80 transition-colors">
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal de Compra de Créditos -->
+    <div v-if="isPurchaseModalOpen" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" @click.self="!purchaseLoading && closePurchaseModal()">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl p-6 w-full max-w-md transform transition-all scale-100 opacity-100">
+        <h3 class="text-lg font-bold text-white mb-2">Comprar Créditos</h3>
+        <p class="text-xs text-zinc-400 mb-6">
+          Selecione um pacote para recarregar seus créditos Gemini. O pagamento é simulado.
+        </p>
+
+        <div v-if="purchaseLoading" class="flex flex-col items-center justify-center h-48">
+          <Loader2 class="w-8 h-8 animate-spin text-violet-400" />
+          <p class="mt-4 text-sm text-zinc-300">Processando sua compra...</p>
+        </div>
+
+        <div v-else class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <button v-for="pkg in creditPackages" :key="pkg.credits" @click="purchaseCredits(pkg)"
+                  class="p-6 text-center bg-zinc-950/50 border border-zinc-800 rounded-2xl hover:border-violet-500 hover:bg-violet-500/10 transition-all group">
+            <p class="text-3xl font-black text-amber-400 group-hover:text-amber-300 transition-colors">{{ pkg.credits }}</p>
+            <p class="text-xs text-zinc-400 mb-3">créditos</p>
+            <p class="text-sm font-semibold text-white bg-zinc-800 group-hover:bg-violet-600 transition-colors rounded-lg py-2">
+              R$ {{ pkg.price.toFixed(2).replace('.', ',') }}
+            </p>
+          </button>
+        </div>
+        <button @click="closePurchaseModal" :disabled="purchaseLoading" class="mt-6 w-full py-2.5 rounded-xl font-medium text-zinc-400 bg-zinc-800/60 hover:bg-zinc-700/80 transition-colors disabled:opacity-50">
+          Cancelar
+        </button>
+      </div>
+    </div>
   </div>
 </template>
