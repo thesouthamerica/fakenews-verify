@@ -179,12 +179,17 @@ app.post('/api/verify', async (c) => {
 const createApiCall = async (url: string, options: RequestInit) => {
   const response = await fetch(url, options);
   if (!response.ok) {
-    // Simula um erro de cota para o frontend
+    const errorText = await response.text();
+    // Trata erros de cota ou indisponibilidade para acionar o fallback
     if (response.status === 429) {
       if (url.includes('generativelanguage')) throw new Error('GEMINI_QUOTA_EXCEEDED');
       if (url.includes('x.ai')) throw new Error('GROK_QUOTA_EXCEEDED');
     }
-    const errorText = await response.text();
+    // Adiciona tratamento para erro 503 do Gemini (alta demanda/indisponibilidade)
+    if (response.status === 503 && url.includes('generativelanguage')) {
+        // Reutiliza o mesmo tipo de erro para acionar o fallback no frontend
+        throw new Error('GEMINI_QUOTA_EXCEEDED');
+    }
     throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
   }
   return response.json();
